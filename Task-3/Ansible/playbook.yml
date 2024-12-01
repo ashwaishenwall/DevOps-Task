@@ -1,86 +1,110 @@
 ---
 - name: Configure web server and deploy Node.js application
-  hosts: web
-  become: yes
-  vars:
-    node_app_repo: "https://github.com/ashwaishenwall/DevOps-Task.git"  # Replace with your actual repository URL
-    node_app_dir: "/var/www/task1"
-    app_folder: "Task-1"  # Folder where the Node.js code is located in the repo
-    app_port: 3000  # The port your Node.js app is running on (adjust if necessary)
+hosts: web
+become: yes
+vars:
+node_app_repo: "https://github.com/ashwaishenwall/DevOps-Task.git" #
+Replace with your actual repository URL
+node_app_dir: "/var/www/task1"
+app_folder: "Task-1" # Folder where the Node.js code is located in the repo
+tasks:
+- name: Install required packages
+yum:
+name:
+- git
+- gcc
+- make
+state: present
+update_cache: yes
 
-  tasks:
-    - name: Install required packages
-      yum:
-        name:
-          - git
-          - nodejs
-          - npm
-        state: present
-        update_cache: yes
+- name: Enable nginx1 package using amazon-linux-extras
+shell: |
+sudo amazon-linux-extras enable nginx1
+sudo yum install -y nginx
+args:
+executable: /bin/bash
 
-    - name: Enable nginx1 package using amazon-linux-extras
-      shell: |
-        sudo amazon-linux-extras enable nginx1
-        sudo yum install -y nginx
-      args:
-        executable: /bin/bash
+- name: Install nvm (Node Version Manager)
+shell: |
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+args:
+executable: /bin/bash
 
-    - name: Clone the entire Node.js application repository
-      git:
-        repo: "{{ node_app_repo }}"
-        dest: "{{ node_app_dir }}"
-        version: "main"
-        clone: yes
-        update: yes
+- name: Install Node.js using nvm
+shell: |
+source ~/.nvm/nvm.sh
+nvm install 16
+nvm use 16
+args:
+executable: /bin/bash
 
-    - name: Install Node.js dependencies
-      npm:
-        path: "{{ node_app_dir }}/{{ app_folder }}"
-        state: present
+- name: Clone the entire Node.js application repository
+git:
+repo: "{{ node_app_repo }}"
+dest: "{{ node_app_dir }}"
+version: "main"
+clone: yes
+update: yes
 
-    - name: Ensure /etc/nginx/conf.d exists and create if necessary
-      file:
-        path: "/etc/nginx/conf.d"
-        state: directory
-        mode: '0755'
+- name: Install Node.js dependencies
+shell: |
+source ~/.nvm/nvm.sh
+cd "{{ node_app_dir }}/{{ app_folder }}"
+npm install
+args:
+executable: /bin/bash
 
-    - name: Configure Nginx for Node.js application
-      template:
-        src: nginx-config.j2
-        dest: /etc/nginx/conf.d/task1.conf  # Correct location for Nginx config on Amazon Linux
-      notify: Restart Nginx
+- name: Ensure /etc/nginx/conf.d exists and create if necessary
+file:
+path: "/etc/nginx/conf.d"
+state: directory
+mode: '0755'
 
-    - name: Remove default Nginx configuration
-      file:
-        path: /etc/nginx/conf.d/default.conf
-        state: absent
-      notify: Restart Nginx
+- name: Configure Nginx for Node.js application
+template:
+src: nginx-config.j2
+dest: /etc/nginx/conf.d/task1.conf # Correct location for Nginx config
+on Amazon Linux
+notify: Restart Nginx
 
-    - name: Start Node.js application
-      shell: "nohup node {{ node_app_dir }}/{{ app_folder }}/app.js > /dev/null 2>&1 &"
-      args:
-        chdir: "{{ node_app_dir }}/{{ app_folder }}"
+- name: Remove default Nginx configuration
+file:
+path: /etc/nginx/conf.d/default.conf
+state: absent
+notify: Restart Nginx
 
-    - name: Wait for Node.js application to start
-      wait_for:
-        host: "{{ ansible_host }}"
-        port: "{{ app_port }}"
-        state: started
-        timeout: 60
+- name: Start Node.js application using nohup (background process)
+shell: |
+source "{{ ansible_env.HOME }}/.nvm/nvm.sh"
+nohup node {{ node_app_dir }}/{{ app_folder }}/app.js >
+/var/log/node_app.log 2>&1 &
+args:
+chdir: "{{ node_app_dir }}/{{ app_folder }}"
+executable: /bin/bash
+register: node_app_start
+failed_when: node_app_start.rc != 0
+ignore_errors: yes
 
-    - name: Curl to check if Node.js application is running
-      shell: |
-        curl -s http://{{ ansible_host }}:{{ app_port }}
-      register: curl_output
-      ignore_errors: yes
+- name: Check if Node.js application is running
+shell: "ps aux | grep node | grep -v grep"
+register: node_process
+failed_when: false
 
-    - name: Output curl response
-      debug:
-        msg: "Response from curl: {{ curl_output.stdout }}"
+- name: Debug output from Node.js app start attempt
+debug:
+msg: "{{ node_app_start.stdout }}"
 
-  handlers:
-    - name: Restart Nginx
-      service:
-        name: nginx
-        state: restarted
+- name: Check Node.js application log for errors
+shell: "tail -n 20 /var/log/node_app.log"
+register: node_app_log
+failed_when: false
 
+- name: Display Node.js application log
+debug:
+msg: "{{ node_app_log.stdout }}"
+
+handlers:
+- name: Restart Nginx
+service:
+name: nginx
+state: restarted
